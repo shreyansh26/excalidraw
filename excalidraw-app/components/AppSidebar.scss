@@ -33,4 +33,23 @@
   .link-button {
     margin: 0 auto;
   }
+
+  .app-sidebar-projects-container {
+    justify-content: center;
+    min-height: 14rem;
+  }
+
+  .app-sidebar-projects-button {
+    border: 1px solid var(--color-surface-lowest);
+    border-radius: 0.5rem;
+    background: var(--color-surface-low);
+    color: var(--color-on-surface);
+    font: inherit;
+    padding: 0.5rem 0.75rem;
+    cursor: pointer;
+
+    &:hover {
+      background: var(--color-surface-mid);
+    }
+  }
 }

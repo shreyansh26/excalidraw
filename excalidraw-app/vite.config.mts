@@ -8,6 +8,7 @@ import checker from "vite-plugin-checker";
 import { createHtmlPlugin } from "vite-plugin-html";
 import Sitemap from "vite-plugin-sitemap";
 import { woff2BrowserPlugin } from "../scripts/woff2/woff2-vite-plugins";
+import { localProjectsApiPlugin } from "./dev/localProjectsApiPlugin";
 export default defineConfig(({ mode }) => {
   // To load .env variables
   const envVars = loadEnv(mode, `../`);
@@ -122,6 +123,7 @@ export default defineConfig(({ mode }) => {
         generateRobotsTxt: false,
       }),
       woff2BrowserPlugin(),
+      localProjectsApiPlugin(),
       react(),
       checker({
         typescript: true,

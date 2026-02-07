@@ -1,5 +1,6 @@
 import { DefaultSidebar, Sidebar, THEME } from "@excalidraw/excalidraw";
 import {
+  LibraryIcon,
   messageCircleIcon,
   presentationIcon,
 } from "@excalidraw/excalidraw/components/icons";
@@ -8,12 +9,24 @@ import { useUIAppState } from "@excalidraw/excalidraw/context/ui-appState";
 
 import "./AppSidebar.scss";
 
-export const AppSidebar = () => {
+export const AppSidebar = ({
+  onOpenProjects,
+}: {
+  onOpenProjects?: () => void;
+}) => {
   const { theme, openSidebar } = useUIAppState();
 
   return (
     <DefaultSidebar>
       <DefaultSidebar.TabTriggers>
+        {onOpenProjects && (
+          <Sidebar.TabTrigger
+            tab="projects"
+            style={{ opacity: openSidebar?.tab === "projects" ? 1 : 0.4 }}
+          >
+            {LibraryIcon}
+          </Sidebar.TabTrigger>
+        )}
         <Sidebar.TabTrigger
           tab="comments"
           style={{ opacity: openSidebar?.tab === "comments" ? 1 : 0.4 }}
@@ -27,6 +40,22 @@ export const AppSidebar = () => {
           {presentationIcon}
         </Sidebar.TabTrigger>
       </DefaultSidebar.TabTriggers>
+      {onOpenProjects && (
+        <Sidebar.Tab tab="projects" className="px-3">
+          <div className="app-sidebar-promo-container app-sidebar-projects-container">
+            <div className="app-sidebar-promo-text">
+              Manage and switch your local projects.
+            </div>
+            <button
+              type="button"
+              className="app-sidebar-projects-button"
+              onClick={onOpenProjects}
+            >
+              Open Projects
+            </button>
+          </div>
+        </Sidebar.Tab>
+      )}
       <Sidebar.Tab tab="comments">
         <div className="app-sidebar-promo-container">
           <div

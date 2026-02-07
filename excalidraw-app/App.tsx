@@ -20,6 +20,7 @@ import Trans from "@excalidraw/excalidraw/components/Trans";
 import {
   APP_NAME,
   EVENT,
+  MIME_TYPES,
   THEME,
   VERSION_TIMEOUT,
   debounce,
@@ -34,6 +35,7 @@ import {
 import polyfill from "@excalidraw/excalidraw/polyfill";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { loadFromBlob } from "@excalidraw/excalidraw/data/blob";
+import { saveAsJSON, serializeAsJSON } from "@excalidraw/excalidraw/data/json";
 import { useCallbackRefState } from "@excalidraw/excalidraw/hooks/useCallbackRefState";
 import { t } from "@excalidraw/excalidraw/i18n";
 
@@ -144,8 +146,15 @@ import "./index.scss";
 
 import { ExcalidrawPlusPromoBanner } from "./components/ExcalidrawPlusPromoBanner";
 import { AppSidebar } from "./components/AppSidebar";
+import { ProjectManagerPage } from "./components/ProjectManagerPage";
+import {
+  DuplicateProjectNameError,
+  ProjectStore,
+  normalizeProjectName,
+} from "./data/ProjectStore";
 
 import type { CollabAPI } from "./collab/Collab";
+import type { ProjectMetadata } from "./data/ProjectStore";
 
 polyfill();
 
@@ -368,7 +377,76 @@ const initializeScene = async (opts: {
   return { scene: null, isExternalScene: false };
 };
 
-const ExcalidrawWrapper = () => {
+const AUTOSAVE_INTERVAL = 5000;
+
+type ProjectWorkspaceContext = {
+  project: ProjectMetadata;
+  initialScene: ExcalidrawInitialDataState | null;
+  onProjectUpdated: (
+    project: ProjectMetadata,
+    previousProjectId?: string,
+  ) => void;
+  onProjectRenamed: (
+    projectId: string,
+    nextName: string,
+  ) => Promise<ProjectMetadata>;
+  onExitToProjects: () => void;
+};
+
+const isExternalSceneRequest = () => {
+  const searchParams = new URLSearchParams(window.location.search);
+  const id = searchParams.get("id");
+  const jsonBackendMatch = window.location.hash.match(
+    /^#json=([a-zA-Z0-9_-]+),([a-zA-Z0-9_-]+)$/,
+  );
+  const externalUrlMatch = window.location.hash.match(/^#url=(.*)$/);
+  const roomLinkData = getCollaborationLinkData(window.location.href);
+
+  return !!(id || jsonBackendMatch || externalUrlMatch || roomLinkData);
+};
+
+const loadProjectScene = async (
+  project: ProjectMetadata,
+): Promise<ExcalidrawInitialDataState | null> => {
+  const latestSnapshot = await ProjectStore.getLatestSnapshot(project.id);
+  if (!latestSnapshot) {
+    return {
+      appState: {
+        name: project.name,
+      },
+    };
+  }
+  try {
+    const scene = await loadFromBlob(
+      new Blob([latestSnapshot.serialized], {
+        type: MIME_TYPES.excalidraw,
+      }),
+      null,
+      null,
+    );
+    return {
+      ...scene,
+      appState: {
+        ...scene.appState,
+        name: project.name,
+      },
+    };
+  } catch (error) {
+    console.error(error);
+    return {
+      appState: {
+        name: project.name,
+        errorMessage: "Failed to load latest project snapshot.",
+      },
+    };
+  }
+};
+
+const ExcalidrawWrapper = ({
+  projectWorkspace,
+}: {
+  projectWorkspace?: ProjectWorkspaceContext;
+}) => {
   const [errorMessage, setErrorMessage] = useState("");
   const isCollabDisabled = isRunningInIframe();
 
@@ -408,6 +486,19 @@ const ExcalidrawWrapper = () => {
     return isCollaborationLink(window.location.href);
   });
   const collabError = useAtomValue(collabErrorIndicatorAtom);
+  const isProjectWorkspaceMode = !!projectWorkspace;
+  const activeProjectRef = useRef<ProjectMetadata | null>(
+    projectWorkspace?.project ?? null,
+  );
+  const latestAppStateRef = useRef<AppState | null>(null);
+  const latestFilesRef = useRef<BinaryFiles | null>(null);
+  const projectDirtyRef = useRef(false);
+  const renameInFlightRef = useRef(false);
+  const saveInFlightRef = useRef(false);
+
+  useEffect(() => {
+    activeProjectRef.current = projectWorkspace?.project ?? null;
+  }, [projectWorkspace?.project]);
 
   useHandleLibrary({
     excalidrawAPI,
@@ -417,6 +508,105 @@ const ExcalidrawWrapper = () => {
   });
 
   const [, forceRefresh] = useState(false);
+
+  const getSceneForProjectPersistence = useCallback(() => {
+    if (!excalidrawAPI) {
+      return null;
+    }
+    const elements = excalidrawAPI.getSceneElements();
+    const appState = latestAppStateRef.current ?? excalidrawAPI.getAppState();
+    const files = latestFilesRef.current ?? excalidrawAPI.getFiles();
+    return { elements, appState, files };
+  }, [excalidrawAPI]);
+
+  const persistProjectSnapshot = useCallback(
+    async (reason: "autosave" | "shortcut") => {
+      const scene = getSceneForProjectPersistence();
+      const project = activeProjectRef.current;
+
+      if (!project || !scene) {
+        return false;
+      }
+
+      try {
+        const serialized = serializeAsJSON(
+          scene.elements,
+          scene.appState,
+          scene.files,
+          "local",
+        );
+        await ProjectStore.saveSnapshot(project.id, serialized);
+        projectDirtyRef.current = false;
+        const updatedProject = await ProjectStore.getProject(project.id);
+        if (updatedProject) {
+          activeProjectRef.current = updatedProject;
+          projectWorkspace?.onProjectUpdated(updatedProject);
+        }
+        if (reason === "shortcut") {
+          excalidrawAPI?.setToast({ message: "Project snapshot saved." });
+        }
+        return true;
+      } catch (error) {
+        console.error(error);
+        if (reason === "shortcut") {
+          excalidrawAPI?.setToast({
+            message: "Failed to save project snapshot.",
+          });
+        }
+        return false;
+      }
+    },
+    [excalidrawAPI, getSceneForProjectPersistence, projectWorkspace],
+  );
+
+  const persistProjectToFilesystem = useCallback(async () => {
+    const scene = getSceneForProjectPersistence();
+    const project = activeProjectRef.current;
+    if (!scene || !project) {
+      return false;
+    }
+
+    try {
+      const { fileHandle } = await saveAsJSON(
+        scene.elements,
+        {
+          ...scene.appState,
+          fileHandle: project.linkedFileHandle,
+        },
+        scene.files,
+        project.name,
+      );
+
+      const updatedProject = await ProjectStore.setLinkedFileHandle(
+        project.id,
+        fileHandle,
+      );
+      activeProjectRef.current = updatedProject;
+      projectWorkspace?.onProjectUpdated(updatedProject);
+      excalidrawAPI?.setToast({ message: "Saved to local .excalidraw file." });
+      return true;
+    } catch (error: any) {
+      if (error?.name !== "AbortError") {
+        console.error(error);
+        excalidrawAPI?.setToast({ message: "Failed to save local file." });
+      }
+      return false;
+    }
+  }, [excalidrawAPI, getSceneForProjectPersistence, projectWorkspace]);
+
+  const saveProjectViaShortcut = useCallback(async () => {
+    if (saveInFlightRef.current) {
+      return;
+    }
+    saveInFlightRef.current = true;
+
+    try {
+      await persistProjectSnapshot("shortcut");
+      await persistProjectToFilesystem();
+    } finally {
+      saveInFlightRef.current = false;
+    }
+  }, [persistProjectSnapshot, persistProjectToFilesystem]);
 
   useEffect(() => {
     if (isDevEnv()) {
@@ -434,6 +624,13 @@ const ExcalidrawWrapper = () => {
   }, [excalidrawAPI]);
 
   useEffect(() => {
+    if (isProjectWorkspaceMode) {
+      initialStatePromiseRef.current.promise.resolve(
+        projectWorkspace?.initialScene ?? null,
+      );
+      return;
+    }
+
     if (!excalidrawAPI || (!isCollabDisabled && !collabAPI)) {
       return;
     }
@@ -628,7 +825,14 @@ const ExcalidrawWrapper = () => {
         false,
       );
     };
-  }, [isCollabDisabled, collabAPI, excalidrawAPI, setLangCode]);
+  }, [
+    isProjectWorkspaceMode,
+    projectWorkspace?.initialScene,
+    isCollabDisabled,
+    collabAPI,
+    excalidrawAPI,
+    setLangCode,
+  ]);
 
   useEffect(() => {
     const unloadHandler = (event: BeforeUnloadEvent) => {
@@ -655,11 +859,99 @@ const ExcalidrawWrapper = () => {
     };
   }, [excalidrawAPI]);
 
+  useEffect(() => {
+    if (!isProjectWorkspaceMode || !excalidrawAPI) {
+      return;
+    }
+
+    const autosaveInterval = window.setInterval(() => {
+      if (!projectDirtyRef.current) {
+        return;
+      }
+      void persistProjectSnapshot("autosave");
+    }, AUTOSAVE_INTERVAL);
+
+    return () => {
+      window.clearInterval(autosaveInterval);
+    };
+  }, [excalidrawAPI, isProjectWorkspaceMode, persistProjectSnapshot]);
+
+  useEffect(() => {
+    if (!isProjectWorkspaceMode) {
+      return;
+    }
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      const isSaveShortcut =
+        (event.metaKey || event.ctrlKey) &&
+        !event.shiftKey &&
+        event.key.toLowerCase() === "s";
+
+      if (!isSaveShortcut) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      void saveProjectViaShortcut();
+    };
+
+    window.addEventListener(EVENT.KEYDOWN, onKeyDown, true);
+    return () => {
+      window.removeEventListener(EVENT.KEYDOWN, onKeyDown, true);
+    };
+  }, [isProjectWorkspaceMode, saveProjectViaShortcut]);
+
   const onChange = (
     elements: readonly OrderedExcalidrawElement[],
     appState: AppState,
     files: BinaryFiles,
   ) => {
+    latestAppStateRef.current = appState;
+    latestFilesRef.current = files;
+
+    if (isProjectWorkspaceMode) {
+      projectDirtyRef.current = true;
+      const activeProject = activeProjectRef.current;
+      const requestedName = appState.name
+        ? normalizeProjectName(appState.name)
+        : "";
+      const hasNameUpdate =
+        !!requestedName &&
+        !!activeProject &&
+        requestedName !== activeProject.name &&
+        !renameInFlightRef.current;
+
+      if (hasNameUpdate) {
+        renameInFlightRef.current = true;
+        projectWorkspace
+          ?.onProjectRenamed(activeProject.id, requestedName)
+          .then((renamedProject) => {
+            activeProjectRef.current = renamedProject;
+            projectWorkspace.onProjectUpdated(renamedProject, activeProject.id);
+          })
+          .catch((error) => {
+            console.error(error);
+            const currentProject = activeProjectRef.current;
+            if (currentProject && excalidrawAPI) {
+              excalidrawAPI.updateScene({
+                appState: {
+                  name: currentProject.name,
+                  errorMessage:
+                    error instanceof DuplicateProjectNameError
+                      ? "Project name already exists."
+                      : appState.errorMessage,
+                },
+                captureUpdate: CaptureUpdateAction.NEVER,
+              });
+            }
+          })
+          .finally(() => {
+            renameInFlightRef.current = false;
+          });
+      }
+    }
+
     if (collabAPI?.isCollaborating()) {
       collabAPI.syncElements(elements);
     }
@@ -842,6 +1134,7 @@ const ExcalidrawWrapper = () => {
         excalidrawAPI={excalidrawRefCallback}
         onChange={onChange}
         initialData={initialStatePromiseRef.current.promise}
+        name={projectWorkspace?.project.name}
         isCollaborating={isCollaborating}
         onPointerUpdate={collabAPI?.onPointerUpdate}
         UIOptions={{
@@ -882,6 +1175,26 @@ const ExcalidrawWrapper = () => {
         handleKeyboardGlobally={true}
         autoFocus={true}
         theme={editorTheme}
+        renderTopLeftUI={() => {
+          if (!isProjectWorkspaceMode) {
+            return null;
+          }
+          return (
+            <button
+              type="button"
+              style={{
+                border: "1px solid var(--color-gray-30)",
+                borderRadius: 8,
+                padding: "6px 10px",
+                background: "var(--island-bg-color)",
+                cursor: "pointer",
+              }}
+              onClick={() => projectWorkspace?.onExitToProjects()}
+            >
+              Projects
+            </button>
+          );
+        }}
         renderTopRightUI={(isMobile) => {
           if (isMobile || !collabAPI || isCollabDisabled) {
             return null;
@@ -889,6 +1202,24 @@ const ExcalidrawWrapper = () => {
 
           return (
             <div className="excalidraw-ui-top-right">
+              {projectWorkspace?.project.name && (
+                <div
+                  style={{
+                    border: "1px solid var(--color-gray-30)",
+                    borderRadius: 8,
+                    padding: "6px 10px",
+                    background: "var(--island-bg-color)",
+                    fontSize: "0.85rem",
+                    maxWidth: 220,
+                    whiteSpace: "nowrap",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                  }}
+                  title={projectWorkspace.project.name}
+                >
+                  {projectWorkspace.project.name}
+                </div>
+              )}
               {excalidrawAPI?.getEditorInterface().formFactor === "desktop" && (
                 <ExcalidrawPlusPromoBanner
                   isSignedIn={isExcalidrawPlusSignedUser}
@@ -920,6 +1251,14 @@ const ExcalidrawWrapper = () => {
           theme={appTheme}
           setTheme={(theme) => setAppTheme(theme)}
           refresh={() => forceRefresh((prev) => !prev)}
+          projectName={projectWorkspace?.project.name}
+          onOpenProjects={
+            projectWorkspace
+              ? () => {
+                  void projectWorkspace.onExitToProjects();
+                }
+              : undefined
+          }
         />
         <AppWelcomeScreen
           onCollabDialogOpen={onCollabDialogOpen}
@@ -987,7 +1326,15 @@ const ExcalidrawWrapper = () => {
           }}
         />
 
-        <AppSidebar />
+        <AppSidebar
+          onOpenProjects={
+            projectWorkspace
+              ? () => {
+                  void projectWorkspace.onExitToProjects();
+                }
+              : undefined
+          }
+        />
 
         {errorMessage && (
           <ErrorDialog onClose={() => setErrorMessage("")}>
@@ -997,6 +1344,17 @@ const ExcalidrawWrapper = () => {
 
         <CommandPalette
           customCommandPaletteItems={[
+            {
+              label: "Projects",
+              category: DEFAULT_CATEGORIES.app,
+              predicate: () => isProjectWorkspaceMode,
+              keywords: ["project", "open", "new", "switch", "workspace"],
+              perform: () => {
+                if (projectWorkspace) {
+                  void projectWorkspace.onExitToProjects();
+                }
+              },
+            },
             {
               label: t("labels.liveCollaboration"),
               category: DEFAULT_CATEGORIES.app,
@@ -1196,6 +1554,245 @@ const ExcalidrawWrapper = () => {
   );
 };
 
+const getInitialSerializedProjectState = (projectName: string) => {
+  return serializeAsJSON(
+    [],
+    {
+      ...getDefaultAppState(),
+      name: projectName,
+    } as AppState,
+    {},
+    "local",
+  );
+};
+
+const migrateLegacySceneToProjects = async () => {
+  if (await ProjectStore.isLegacyMigrationDone()) {
+    return;
+  }
+
+  const existingProjects = await ProjectStore.listProjects();
+  if (existingProjects.length > 0) {
+    await ProjectStore.setLegacyMigrationDone();
+    return;
+  }
+
+  const legacyScene = importFromLocalStorage();
+  const hasLegacyScene = (legacyScene.elements?.length ?? 0) > 0;
+
+  if (!hasLegacyScene) {
+    await ProjectStore.setLegacyMigrationDone();
+    return;
+  }
+
+  const legacyName = normalizeProjectName(
+    legacyScene.appState?.name || t("labels.untitled"),
+  );
+  const project = await ProjectStore.createProject(legacyName || "Untitled");
+  const serialized = serializeAsJSON(
+    legacyScene.elements || [],
+    {
+      ...getDefaultAppState(),
+      ...legacyScene.appState,
+      name: project.name,
+    } as AppState,
+    {},
+    "local",
+  );
+  await ProjectStore.saveSnapshot(project.id, serialized);
+  await ProjectStore.setActiveProjectId(project.id);
+  await ProjectStore.setLegacyMigrationDone();
+};
+
+const ProjectWorkspaceApp = () => {
+  const [projects, setProjects] = useState<ProjectMetadata[]>([]);
+  const [activeProject, setActiveProject] = useState<ProjectMetadata | null>(
+    null,
+  );
+  const [activeProjectScene, setActiveProjectScene] =
+    useState<ExcalidrawInitialDataState | null>(null);
+  const [isLoadingProjects, setIsLoadingProjects] = useState(true);
+  const [projectError, setProjectError] = useState("");
+
+  const refreshProjects = useCallback(async () => {
+    const allProjects = await ProjectStore.listProjects();
+    setProjects(allProjects);
+    return allProjects;
+  }, []);
+
+  const openProject = useCallback(
+    async (projectId: string) => {
+      const project = await ProjectStore.getProject(projectId);
+      if (!project) {
+        throw new Error("Project not found.");
+      }
+      const scene = await loadProjectScene(project);
+      setActiveProject(project);
+      setActiveProjectScene(scene);
+      await ProjectStore.setActiveProjectId(project.id);
+      await refreshProjects();
+    },
+    [refreshProjects],
+  );
+
+  useEffect(() => {
+    let isCancelled = false;
+    const initializeProjects = async () => {
+      if (isExternalSceneRequest()) {
+        setIsLoadingProjects(false);
+        return;
+      }
+
+      try {
+        await migrateLegacySceneToProjects();
+        const allProjects = await refreshProjects();
+        const activeProjectId = await ProjectStore.getActiveProjectId();
+
+        if (!isCancelled && activeProjectId) {
+          const projectToOpen = allProjects.find(
+            (project) => project.id === activeProjectId,
+          );
+          if (projectToOpen) {
+            const scene = await loadProjectScene(projectToOpen);
+            if (!isCancelled) {
+              setActiveProject(projectToOpen);
+              setActiveProjectScene(scene);
+            }
+          } else {
+            await ProjectStore.setActiveProjectId(null);
+          }
+        }
+      } catch (error) {
+        console.error(error);
+        if (!isCancelled) {
+          setProjectError("Failed to initialize project workspace.");
+        }
+      } finally {
+        if (!isCancelled) {
+          setIsLoadingProjects(false);
+        }
+      }
+    };
+
+    void initializeProjects();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [refreshProjects]);
+
+  const onProjectUpdated = useCallback(
+    (updatedProject: ProjectMetadata, previousProjectId?: string) => {
+      setActiveProject((currentProject) =>
+        currentProject &&
+        (currentProject.id === updatedProject.id ||
+          (!!previousProjectId && currentProject.id === previousProjectId))
+          ? updatedProject
+          : currentProject,
+      );
+      setProjects((currentProjects) => {
+        const otherProjects = currentProjects.filter((project) => {
+          return (
+            project.id !== updatedProject.id &&
+            (!previousProjectId || project.id !== previousProjectId)
+          );
+        });
+        return [...otherProjects, updatedProject].sort(
+          (a, b) => b.updatedAt - a.updatedAt,
+        );
+      });
+    },
+    [],
+  );
+
+  if (isExternalSceneRequest()) {
+    return <ExcalidrawWrapper />;
+  }
+
+  if (isLoadingProjects) {
+    return (
+      <div style={{ height: "100%", display: "grid", placeItems: "center" }}>
+        Loading projects...
+      </div>
+    );
+  }
+
+  if (!activeProject) {
+    return (
+      <>
+        {projectError && (
+          <div
+            style={{
+              position: "fixed",
+              top: 12,
+              left: 12,
+              zIndex: 2,
+              background: "#fff",
+              border: "1px solid #d86a6a",
+              borderRadius: 8,
+              padding: "6px 10px",
+            }}
+          >
+            {projectError}
+          </div>
+        )}
+        <ProjectManagerPage
+          projects={projects}
+          onCreateProject={async (name) => {
+            const project = await ProjectStore.createProject(name);
+            await ProjectStore.saveSnapshot(
+              project.id,
+              getInitialSerializedProjectState(project.name),
+            );
+            await openProject(project.id);
+          }}
+          onOpenProject={openProject}
+          onRenameProject={async (projectId, name) => {
+            const renamedProject = await ProjectStore.renameProject(
+              projectId,
+              name,
+            );
+            onProjectUpdated(renamedProject);
+          }}
+          onDeleteProject={async (projectId) => {
+            await ProjectStore.deleteProject(projectId);
+            await refreshProjects();
+            setActiveProject((currentProject) =>
+              currentProject?.id === projectId ? null : currentProject,
+            );
+          }}
+        />
+      </>
+    );
+  }
+
+  return (
+    <ExcalidrawWrapper
+      key={activeProject.id}
+      projectWorkspace={{
+        project: activeProject,
+        initialScene: activeProjectScene,
+        onProjectUpdated,
+        onProjectRenamed: async (projectId, nextName) => {
+          const renamedProject = await ProjectStore.renameProject(
+            projectId,
+            nextName,
+          );
+          onProjectUpdated(renamedProject, projectId);
+          await ProjectStore.setActiveProjectId(renamedProject.id);
+          return renamedProject;
+        },
+        onExitToProjects: async () => {
+          await ProjectStore.setActiveProjectId(null);
+          await refreshProjects();
+          setActiveProject(null);
+          setActiveProjectScene(null);
+        },
+      }}
+    />
+  );
+};
+
 const ExcalidrawApp = () => {
   const isCloudExportWindow =
     window.location.pathname === "/excalidraw-plus-export";
@@ -1206,7 +1803,7 @@ const ExcalidrawApp = () => {
   return (
     <TopErrorBoundary>
       <Provider store={appJotaiStore}>
-        <ExcalidrawWrapper />
+        <ProjectWorkspaceApp />
       </Provider>
     </TopErrorBoundary>
   );

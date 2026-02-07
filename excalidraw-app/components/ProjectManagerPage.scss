@@ -1,0 +1,176 @@
+.project-manager-page {
+  height: 100%;
+  overflow: auto;
+  padding: 1.5rem;
+  font-family: var(
+    --ui-font,
+    Assistant,
+    system-ui,
+    -apple-system,
+    Segoe UI,
+    Roboto,
+    sans-serif
+  );
+  color: var(--color-on-surface, #1f1f25);
+  background: var(--color-surface-low, #f4f5f7);
+}
+
+.project-manager-page__container {
+  max-width: 52rem;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.project-manager-page__header,
+.project-manager-page__create,
+.project-manager-page__item,
+.project-manager-page__empty {
+  border-radius: 0.75rem;
+  box-shadow: var(--shadow-island, 0 1px 0 0 #dcdde2, 0 0 0 1px #e4e5ea);
+  background: var(--island-bg-color, #ffffff);
+}
+
+.project-manager-page__header {
+  padding: 1rem 1.125rem;
+}
+
+.project-manager-page__header h1 {
+  margin: 0;
+  font-size: 1.5rem;
+  font-weight: 600;
+}
+
+.project-manager-page__header p {
+  margin: 0.35rem 0 0;
+  color: var(--color-text-secondary, #66667a);
+}
+
+.project-manager-page__create,
+.project-manager-page__item,
+.project-manager-page__empty {
+  padding: 0.875rem 1rem;
+}
+
+.project-manager-page__create form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.project-manager-page__create label {
+  font-size: 0.875rem;
+  color: var(--color-text-secondary, #66667a);
+}
+
+.project-manager-page__create-row {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.project-manager-page__create-row input,
+.project-manager-page__rename-form input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--color-surface-lowest, #d8dae2);
+  border-radius: 0.5rem;
+  background: var(--island-bg-color, #fff);
+  color: var(--color-on-surface, #1f1f25);
+  padding: 0.5rem 0.625rem;
+  font-size: 0.95rem;
+  font-family: inherit;
+}
+
+.project-manager-page__create-row input:focus,
+.project-manager-page__rename-form input:focus {
+  outline: none;
+  border-color: var(--color-brand-active, #6965db);
+  box-shadow: 0 0 0 1px var(--color-brand-active, #6965db);
+}
+
+.project-manager-page__actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.project-manager-page__actions button,
+.project-manager-page__create-row button {
+  border: 1px solid var(--color-surface-lowest, #d8dae2);
+  background: var(--color-surface-low, #f4f5f7);
+  color: var(--color-on-surface, #1f1f25);
+  border-radius: 0.5rem;
+  padding: 0.45rem 0.75rem;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.project-manager-page__actions button:hover,
+.project-manager-page__create-row button:hover {
+  background: var(--color-surface-mid, #eceef4);
+}
+
+.project-manager-page__actions button:disabled,
+.project-manager-page__create-row button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.project-manager-page__danger {
+  color: var(--button-destructive-color, #c92a2a) !important;
+  border-color: var(--button-gray-2, #ced4da) !important;
+  background: var(--button-destructive-bg-color, #ffe3e3) !important;
+}
+
+.project-manager-page__list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+}
+
+.project-manager-page__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.project-manager-page__meta h2 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.project-manager-page__meta p {
+  margin: 0.25rem 0 0;
+  font-size: 0.875rem;
+  color: var(--color-text-secondary, #66667a);
+}
+
+.project-manager-page__rename-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.project-manager-page__error {
+  margin: 0;
+  color: var(--button-destructive-color, #c92a2a);
+  font-size: 0.85rem;
+}
+
+@media (max-width: 700px) {
+  .project-manager-page {
+    padding: 1rem;
+  }
+
+  .project-manager-page__item {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .project-manager-page__create-row {
+    flex-direction: column;
+  }
+}

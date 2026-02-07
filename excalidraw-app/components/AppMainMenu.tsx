@@ -1,4 +1,5 @@
 import {
+  LibraryIcon,
   loginIcon,
   ExcalLogo,
   eyeIcon,
@@ -22,9 +23,25 @@ export const AppMainMenu: React.FC<{
   theme: Theme | "system";
   setTheme: (theme: Theme | "system") => void;
   refresh: () => void;
+  projectName?: string;
+  onOpenProjects?: () => void;
 }> = React.memo((props) => {
   return (
     <MainMenu>
+      {props.projectName && (
+        <MainMenu.ItemCustom>
+          <div
+            style={{ fontSize: "0.85rem", opacity: 0.75, padding: "0 0.25rem" }}
+          >
+            Current project: {props.projectName}
+          </div>
+        </MainMenu.ItemCustom>
+      )}
+      {props.onOpenProjects && (
+        <MainMenu.Item icon={LibraryIcon} onClick={props.onOpenProjects}>
+          Projects
+        </MainMenu.Item>
+      )}
       <MainMenu.DefaultItems.LoadScene />
       <MainMenu.DefaultItems.SaveToActiveFile />
       <MainMenu.DefaultItems.Export />
