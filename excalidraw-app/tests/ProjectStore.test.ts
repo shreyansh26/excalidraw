@@ -61,4 +61,18 @@ describe("ProjectStore", () => {
     expect(await ProjectStore.getProject(project.id)).toBeNull();
     expect(await ProjectStore.listSnapshots(project.id)).toHaveLength(0);
   });
+
+  it("persists linked file handle for repeated saves", async () => {
+    const project = await ProjectStore.createProject("Linked file");
+    const fileHandle = { kind: "file" } as any;
+
+    await ProjectStore.setLinkedFileHandle(project.id, fileHandle);
+
+    const projectWithHandle = await ProjectStore.getProject(project.id);
+    expect(projectWithHandle?.linkedFileHandle).toStrictEqual(fileHandle);
+
+    const projects = await ProjectStore.listProjects();
+    const listedProject = projects.find((item) => item.id === project.id);
+    expect(listedProject?.linkedFileHandle).toStrictEqual(fileHandle);
+  });
 });

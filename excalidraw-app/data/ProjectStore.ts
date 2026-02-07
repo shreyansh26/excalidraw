@@ -5,11 +5,13 @@ import type { FileSystemHandle } from "@excalidraw/excalidraw/data/filesystem";
 const PROJECTS_DB_NAME = "excalidraw-projects-meta-db";
 const SNAPSHOTS_DB_NAME = "excalidraw-projects-snapshots-db";
 const SETTINGS_DB_NAME = "excalidraw-projects-settings-db";
+const HANDLES_DB_NAME = "excalidraw-projects-handles-db";
 const LOCAL_PROJECTS_API = "/api/local-projects";
 
 const projectsStore = createStore(PROJECTS_DB_NAME, "projects");
 const snapshotsStore = createStore(SNAPSHOTS_DB_NAME, "snapshots");
 const settingsStore = createStore(SETTINGS_DB_NAME, "settings");
+const linkedHandlesStore = createStore(HANDLES_DB_NAME, "handles");
 
 const SETTINGS_KEYS = {
   activeProjectId: "active-project-id",
@@ -89,9 +91,37 @@ const getSnapshotsEntries = async () => {
 const sortByUpdatedAtDesc = (a: ProjectMetadata, b: ProjectMetadata) =>
   b.updatedAt - a.updatedAt;
 
-const mapLocalProject = (project: LocalApiProject): ProjectMetadata => ({
+const getLinkedFileHandle = async (projectId: string) =>
+  (await get<FileSystemHandle | null>(projectId, linkedHandlesStore)) ?? null;
+
+const setLinkedFileHandleForProject = async (
+  projectId: string,
+  linkedFileHandle: FileSystemHandle | null,
+) => {
+  await set(projectId, linkedFileHandle, linkedHandlesStore);
+};
+
+const deleteLinkedFileHandleForProject = async (projectId: string) => {
+  await del(projectId, linkedHandlesStore);
+};
+
+const moveLinkedFileHandle = async (
+  fromProjectId: string,
+  toProjectId: string,
+) => {
+  if (fromProjectId === toProjectId) {
+    return;
+  }
+  const linkedFileHandle = await getLinkedFileHandle(fromProjectId);
+  await deleteLinkedFileHandleForProject(fromProjectId);
+  await setLinkedFileHandleForProject(toProjectId, linkedFileHandle);
+};
+
+const mapLocalProject = async (
+  project: LocalApiProject,
+): Promise<ProjectMetadata> => ({
   ...project,
-  linkedFileHandle: null,
+  linkedFileHandle: await getLinkedFileHandle(project.id),
 });
 
 export class ProjectStore {
@@ -169,9 +199,12 @@ export class ProjectStore {
     }>("");
 
     if (localProjectsResponse?.ok) {
-      return localProjectsResponse.data.projects
-        .map(mapLocalProject)
-        .sort(sortByUpdatedAtDesc);
+      const projects = await Promise.all(
+        localProjectsResponse.data.projects.map((project) =>
+          mapLocalProject(project),
+        ),
+      );
+      return projects.sort(sortByUpdatedAtDesc);
     }
     if (localProjectsResponse && !localProjectsResponse.ok) {
       throw new Error(localProjectsResponse.error);
@@ -257,7 +290,14 @@ export class ProjectStore {
     });
 
     if (renameProjectResponse?.ok) {
-      return mapLocalProject(renameProjectResponse.data.project);
+      const renamedProject = await mapLocalProject(
+        renameProjectResponse.data.project,
+      );
+      await moveLinkedFileHandle(projectId, renamedProject.id);
+      return {
+        ...renamedProject,
+        linkedFileHandle: await getLinkedFileHandle(renamedProject.id),
+      };
     }
 
     if (renameProjectResponse && !renameProjectResponse.ok) {
@@ -303,6 +343,7 @@ export class ProjectStore {
     );
 
     if (deleteProjectResponse?.ok) {
+      await deleteLinkedFileHandleForProject(projectId);
       const activeProjectId = await this.getActiveProjectId();
       if (activeProjectId === projectId) {
         await this.setActiveProjectId(null);
@@ -312,6 +353,7 @@ export class ProjectStore {
 
     if (deleteProjectResponse && !deleteProjectResponse.ok) {
       if (deleteProjectResponse.status === 404) {
+        await deleteLinkedFileHandleForProject(projectId);
         const activeProjectId = await this.getActiveProjectId();
         if (activeProjectId === projectId) {
           await this.setActiveProjectId(null);
@@ -322,6 +364,7 @@ export class ProjectStore {
     }
 
     await del(projectId, projectsStore);
+    await deleteLinkedFileHandleForProject(projectId);
     const snapshots = await this.listSnapshots(projectId);
     await Promise.all(
       snapshots.map((snapshot) => del(snapshot.id, snapshotsStore)),
@@ -432,7 +475,11 @@ export class ProjectStore {
     }>(`/${encodeURIComponent(projectId)}`);
 
     if (localProjectResponse?.ok) {
-      return mapLocalProject(localProjectResponse.data.project);
+      await setLinkedFileHandleForProject(projectId, linkedFileHandle);
+      return {
+        ...(await mapLocalProject(localProjectResponse.data.project)),
+        linkedFileHandle,
+      };
     }
 
     if (localProjectResponse && !localProjectResponse.ok) {
@@ -453,6 +500,7 @@ export class ProjectStore {
       updatedAt: Date.now(),
     };
     await set(projectId, updatedProject, projectsStore);
+    await setLinkedFileHandleForProject(projectId, linkedFileHandle);
     return updatedProject;
   }
 
@@ -488,6 +536,13 @@ export class ProjectStore {
       del(SETTINGS_KEYS.activeProjectId, settingsStore),
       del(SETTINGS_KEYS.migrationDone, settingsStore),
     ]);
+
+    const linkedHandleEntries = await entries(linkedHandlesStore);
+    await Promise.all(
+      linkedHandleEntries.map(([projectId]) =>
+        del(projectId as string, linkedHandlesStore),
+      ),
+    );
 
     this.localApiStatus = "unknown";
   }
